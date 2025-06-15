@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: nsfw-gen-bot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: TELEGRAM_TOKEN
+        fromEnvVar: TELEGRAM_TOKEN
+      - key: REPLICATE_TOKEN
+        fromEnvVar: REPLICATE_TOKEN
