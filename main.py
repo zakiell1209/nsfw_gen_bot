@@ -1,49 +1,65 @@
 import os
-import replicate
+import requests
+import asyncio
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import Message
-from aiogram.enums import ParseMode
-from aiogram.filters import CommandStart
-from aiogram import F
-
+from aiogram.filters import Command
 from dotenv import load_dotenv
 
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-REPLICATE_TOKEN = os.getenv("REPLICATE_API_TOKEN")
+REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
 
-bot = Bot(token=TELEGRAM_TOKEN, parse_mode=ParseMode.HTML)
+if not TELEGRAM_TOKEN or not REPLICATE_API_TOKEN:
+    raise RuntimeError("Set TELEGRAM_TOKEN and REPLICATE_API_TOKEN in environment")
+
+bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 
-# Установка токена для Replicate
-replicate_client = replicate.Client(api_token=REPLICATE_TOKEN)
+async def generate_image(prompt: str) -> str:
+    # Создаём запрос в Replicate API
+    response = requests.post(
+        "https://api.replicate.com/v1/predictions",
+        headers={
+            "Authorization": f"Token {REPLICATE_API_TOKEN}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "version": "aitechtree/nsfw-novel-generation:latest",  # нужная модель и версия
+            "input": {"prompt": prompt}
+        }
+    )
+    response.raise_for_status()
+    prediction = response.json()
+    pred_id = prediction["id"]
+    url = prediction["urls"]["get"]
 
-@dp.message(CommandStart())
-async def cmd_start(message: Message):
-    await message.reply("Привет! Отправь мне описание сцены, и я сгенерирую изображение.")
+    # Ожидаем выполнения
+    while True:
+        r = requests.get(url, headers={"Authorization": f"Token {REPLICATE_API_TOKEN}"})
+        r.raise_for_status()
+        result = r.json()
+        status = result["status"]
+        if status == "succeeded":
+            out = result["output"]
+            return out[0] if isinstance(out, list) else out
+        if status in ("failed", "canceled"):
+            raise RuntimeError(f"Generation {status}")
+        await asyncio.sleep(2)
 
-@dp.message(F.text)
-async def generate_image(message: Message):
-    prompt = message.text.strip()
+@dp.message(Command("start"))
+async def cmd_start(msg: types.Message):
+    await msg.answer("Привет! Отправь мне любое описание — я сгенерирую NSFW-изображение.")
 
-    await message.reply("Генерация изображения, подожди немного...")
-
+@dp.message()
+async def msg_handler(msg: types.Message):
+    prompt = msg.text.strip()
+    await msg.answer("Генерирую... подожди секунду ⏳")
     try:
-        output = replicate_client.run(
-            "aitechtree/nsfw-novel-generation:71c5f85b1a67340d8c44d159de51adf21d3c4f73f64c7d3576f8c2cc6871ecbe",
-            input={"prompt": prompt}
-        )
-
-        if isinstance(output, list):
-            image_url = output[0]
-        else:
-            image_url = output
-
-        await message.reply_photo(photo=image_url)
+        img_url = await generate_image(prompt)
+        await msg.answer_photo(photo=img_url, caption=f"Вот что получилось по промту:\n{prompt}")
     except Exception as e:
-        await message.reply(f"Ошибка при генерации: {e}")
+        await msg.answer(f"Ошибка при генерации: {e}")
 
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(dp.start_polling(bot))
