@@ -1,8 +1,7 @@
 import os
+import logging
 import requests
-import asyncio
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
+from aiogram import Bot, Dispatcher, executor, types
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -10,53 +9,49 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN")
 
-if not TELEGRAM_TOKEN or not REPLICATE_API_TOKEN:
-    raise RuntimeError("Не установлены TELEGRAM_TOKEN и/или REPLICATE_API_TOKEN")
+logging.basicConfig(level=logging.INFO)
 
 bot = Bot(token=TELEGRAM_TOKEN)
-dp = Dispatcher()
+dp = Dispatcher(bot)
 
-async def generate_image(prompt: str) -> str:
-    response = requests.post(
-        "https://api.replicate.com/v1/predictions",
-        headers={
-            "Authorization": f"Token {REPLICATE_API_TOKEN}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "version": "aitechtree/nsfw-novel-generation:latest",
-            "input": {"prompt": prompt}
+REPLICATE_API_URL = "https://api.replicate.com/v1/predictions"
+
+
+def replicate_generate(prompt: str):
+    headers = {
+        "Authorization": f"Token {REPLICATE_API_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    data = {
+        "version": "8a27d67e88df54d28547d89157a128a8b8bc7c65c87687b5c8cf871a4c999a30",  # пример version модели
+        "input": {
+            "prompt": prompt
         }
-    )
-    response.raise_for_status()
+    }
+    response = requests.post(REPLICATE_API_URL, headers=headers, json=data)
+    if response.status_code != 201:
+        raise Exception(f"Replicate API error: {response.status_code} {response.text}")
     prediction = response.json()
-    pred_id = prediction["id"]
-    url = prediction["urls"]["get"]
+    prediction_url = prediction['urls']['get']
+    # Можно расширить, чтобы ждать завершения генерации через опрос prediction_url
+    return prediction_url
 
-    while True:
-        r = requests.get(url, headers={"Authorization": f"Token {REPLICATE_API_TOKEN}"})
-        r.raise_for_status()
-        result = r.json()
-        if result["status"] == "succeeded":
-            out = result["output"]
-            return out[0] if isinstance(out, list) else out
-        if result["status"] in ("failed", "canceled"):
-            raise RuntimeError(f"Генерация завершилась со статусом {result['status']}")
-        await asyncio.sleep(2)
 
-@dp.message(Command("start"))
-async def cmd_start(msg: types.Message):
-    await msg.answer("Привет! Введи любой текст, и я сгенерирую NSFW-изображение.")
+@dp.message_handler(commands=["start"])
+async def start_cmd(message: types.Message):
+    await message.answer("Привет! Отправь описание, и я сгенерирую картинку через Replicate.")
 
-@dp.message()
-async def msg_handler(msg: types.Message):
-    prompt = msg.text.strip()
-    await msg.answer("Генерирую... ⏳")
+
+@dp.message_handler()
+async def handle_prompt(message: types.Message):
+    prompt = message.text
+    await message.answer("Получил запрос, начинаю генерацию...")
     try:
-        img_url = await generate_image(prompt)
-        await msg.answer_photo(photo=img_url, caption=f"Результат по запросу:\n{prompt}")
+        prediction_url = replicate_generate(prompt)
+        await message.answer(f"Ссылка на генерацию (получить результат надо дополнительно):\n{prediction_url}")
     except Exception as e:
-        await msg.answer(f"Ошибка при генерации: {e}")
+        await message.answer(f"Ошибка при генерации: {e}")
+
 
 if __name__ == "__main__":
-    asyncio.run(dp.start_polling(bot))
+    executor.start_polling(dp, skip_updates=True)
